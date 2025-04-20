@@ -1,16 +1,33 @@
 import os
+import logging
 from pytube import YouTube
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
 from urllib.parse import urlparse, parse_qs
-import argparse
-import sys
 
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Bot configuration
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+DOWNLOAD_FOLDER = "./downloads"
+
+# Validate YouTube URL (same as before)
 def validate_youtube_url(url):
-    """Validate if the URL is a proper YouTube URL."""
     try:
         parsed = urlparse(url)
         if parsed.netloc in ['www.youtube.com', 'youtube.com', 'youtu.be']:
             if 'v=' in parsed.query:
-                video_id = parse_qs(parsed.query)['v'][0]
                 return True
             elif parsed.path.startswith('/watch'):
                 return True
@@ -20,97 +37,138 @@ def validate_youtube_url(url):
     except:
         return False
 
-def get_video_info(yt):
-    """Get video information."""
-    print("\nVideo Information:")
-    print(f"Title: {yt.title}")
-    print(f"Author: {yt.author}")
-    print(f"Length: {yt.length} seconds")
-    print(f"Views: {yt.views:,}")
-    print(f"Rating: {yt.rating}")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    user = update.effective_user
+    await update.message.reply_text(
+        f"Hi {user.first_name}!\n\n"
+        "I'm a YouTube downloader bot. Send me a YouTube URL and I'll download it for you.\n\n"
+        "Commands:\n"
+        "/start - Show this message\n"
+        "/help - Show help information\n\n"
+        "Just send me a YouTube link to get started!"
+    )
 
-def download_video(url, output_path='./downloads', quality='highest', audio_only=False):
-    """Download YouTube video."""
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /help is issued."""
+    await update.message.reply_text(
+        "How to use this bot:\n\n"
+        "1. Send me a YouTube URL (e.g., https://youtube.com/watch?v=...)\n"
+        "2. I'll show you the video info\n"
+        "3. Choose the format you want to download\n\n"
+        "Supported formats:\n"
+        "- Video (various qualities)\n"
+        "- Audio only (MP3)"
+    )
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle YouTube URL sent by user."""
+    url = update.message.text.strip()
+    
+    if not validate_youtube_url(url):
+        await update.message.reply_text("❌ That doesn't look like a valid YouTube URL. Please try again.")
+        return
+    
     try:
         yt = YouTube(url)
+        context.user_data['current_url'] = url
         
-        # Create downloads directory if it doesn't exist
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
+        # Create download options keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("🎥 Best Video", callback_data="best_video"),
+                InlineKeyboardButton("🎵 Audio Only", callback_data="audio"),
+            ],
+            [
+                InlineKeyboardButton("720p", callback_data="720p"),
+                InlineKeyboardButton("480p", callback_data="480p"),
+                InlineKeyboardButton("360p", callback_data="360p"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        get_video_info(yt)
-        
-        if audio_only:
-            print("\nDownloading audio...")
-            stream = yt.streams.get_audio_only()
-        else:
-            print("\nDownloading video...")
-            if quality == 'highest':
-                stream = yt.streams.get_highest_resolution()
-            else:
-                stream = yt.streams.filter(res=quality, progressive=True).first()
-                if not stream:
-                    print(f"No stream found with quality {quality}. Downloading highest quality instead.")
-                    stream = yt.streams.get_highest_resolution()
-        
-        print(f"Downloading: {yt.title} ({stream.resolution if not audio_only else 'audio'})...")
-        stream.download(output_path)
-        print("\nDownload completed successfully!")
-        print(f"File saved to: {os.path.join(output_path, yt.title)}")
+        await update.message.reply_text(
+            f"📹 <b>{yt.title}</b>\n"
+            f"👤 {yt.author}\n"
+            f"⏱ {yt.length//60}:{yt.length%60:02d}\n"
+            f"👀 {yt.views:,} views\n\n"
+            "Choose download option:",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
         
     except Exception as e:
-        print(f"\nError occurred: {str(e)}")
+        logger.error(f"Error processing URL: {e}")
+        await update.message.reply_text("❌ Sorry, I couldn't process that video. Please try another one.")
 
-def interactive_mode():
-    """Run the script in interactive mode."""
-    print("YouTube Video Downloader")
-    print("-----------------------")
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button presses from the inline keyboard."""
+    query = update.callback_query
+    await query.answer()
     
-    while True:
-        url = input("\nEnter YouTube URL (or 'q' to quit): ").strip()
-        if url.lower() == 'q':
-            break
-            
-        if not validate_youtube_url(url):
-            print("Invalid YouTube URL. Please try again.")
-            continue
-            
-        print("\nDownload options:")
-        print("1. Highest quality video")
-        print("2. Specific quality")
-        print("3. Audio only")
-        choice = input("Enter your choice (1-3): ").strip()
+    url = context.user_data.get('current_url')
+    if not url:
+        await query.edit_message_text("⚠️ Session expired. Please send the URL again.")
+        return
+    
+    try:
+        yt = YouTube(url)
+        chat_id = query.message.chat_id
         
-        output_path = input(f"Enter output directory (leave blank for './downloads'): ").strip()
-        output_path = output_path if output_path else './downloads'
+        # Create downloads directory if it doesn't exist
+        if not os.path.exists(DOWNLOAD_FOLDER):
+            os.makedirs(DOWNLOAD_FOLDER)
         
-        if choice == '1':
-            download_video(url, output_path)
-        elif choice == '2':
-            quality = input("Enter quality (e.g., 720p, 1080p): ").strip()
-            download_video(url, output_path, quality)
-        elif choice == '3':
-            download_video(url, output_path, audio_only=True)
+        await query.edit_message_text("⏳ Downloading your file... Please wait.")
+        
+        if query.data == "audio":
+            # Download audio
+            stream = yt.streams.get_audio_only()
+            file_path = stream.download(output_path=DOWNLOAD_FOLDER)
+            await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=open(file_path, 'rb'),
+                title=yt.title,
+                performer=yt.author,
+                caption=f"🎵 {yt.title}"
+            )
         else:
-            print("Invalid choice. Downloading highest quality by default.")
-            download_video(url, output_path)
+            # Download video
+            if query.data == "best_video":
+                stream = yt.streams.get_highest_resolution()
+            else:
+                stream = yt.streams.filter(res=query.data, progressive=True).first()
+                if not stream:
+                    stream = yt.streams.get_highest_resolution()
+            
+            file_path = stream.download(output_path=DOWNLOAD_FOLDER)
+            await context.bot.send_video(
+                chat_id=chat_id,
+                video=open(file_path, 'rb'),
+                caption=f"📹 {yt.title} ({stream.resolution})"
+            )
+        
+        # Clean up the downloaded file
+        os.remove(file_path)
+        await query.edit_message_text("✅ Download complete!")
+        
+    except Exception as e:
+        logger.error(f"Error downloading video: {e}")
+        await query.edit_message_text("❌ Sorry, something went wrong during download. Please try again.")
 
 def main():
-    parser = argparse.ArgumentParser(description='YouTube Video Downloader')
-    parser.add_argument('url', nargs='?', help='YouTube video URL')
-    parser.add_argument('-o', '--output', help='Output directory', default='./downloads')
-    parser.add_argument('-q', '--quality', help='Video quality (e.g., 720p, 1080p)', default='highest')
-    parser.add_argument('-a', '--audio', help='Download audio only', action='store_true')
+    """Start the bot."""
+    # Create the Application
+    application = Application.builder().token(TOKEN).build()
     
-    args = parser.parse_args()
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    application.add_handler(CallbackQueryHandler(button_handler))
     
-    if args.url:
-        if not validate_youtube_url(args.url):
-            print("Error: Invalid YouTube URL")
-            sys.exit(1)
-        download_video(args.url, args.output, args.quality, args.audio)
-    else:
-        interactive_mode()
+    # Run the bot
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
