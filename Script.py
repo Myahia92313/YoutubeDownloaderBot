@@ -1,143 +1,116 @@
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-import re
-import logging
 import os
-import asyncio
-import shutil
+from pytube import YouTube
+from urllib.parse import urlparse, parse_qs
+import argparse
+import sys
 
-# Regex for validating YouTube URLs
-YOUTUBE_URL_REGEX = r'(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+'
+def validate_youtube_url(url):
+    """Validate if the URL is a proper YouTube URL."""
+    try:
+        parsed = urlparse(url)
+        if parsed.netloc in ['www.youtube.com', 'youtube.com', 'youtu.be']:
+            if 'v=' in parsed.query:
+                video_id = parse_qs(parsed.query)['v'][0]
+                return True
+            elif parsed.path.startswith('/watch'):
+                return True
+            elif parsed.netloc == 'youtu.be':
+                return True
+        return False
+    except:
+        return False
 
-# Global dictionary to keep track of user requests
-user_requests = {}
+def get_video_info(yt):
+    """Get video information."""
+    print("\nVideo Information:")
+    print(f"Title: {yt.title}")
+    print(f"Author: {yt.author}")
+    print(f"Length: {yt.length} seconds")
+    print(f"Views: {yt.views:,}")
+    print(f"Rating: {yt.rating}")
 
-# Function to validate YouTube URLs
-def is_valid_youtube_url(url):
-    return re.match(YOUTUBE_URL_REGEX, url) is not None
-
-# Function to handle user responses for download options
-async def handle_download_option(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user_action = query.data
-    user_id = query.from_user.id
-    video_link = user_requests.get(user_id)
-    
-    logger.info(f"User action: {user_action}, Video link: {video_link}")
-    
-    if not video_link:
-        await query.answer("No valid YouTube link found. Please start again.")
-        return
-
-    # Step 1: Handle direct download or command choice
-    if user_action in ["video", "image", "subtitles", "all"]:
-        context.user_data[user_id] = user_action
-
-        # Generate keyboard based on selected option
-        if user_action == "video":
-            keyboard = [
-                [InlineKeyboardButton("Get Download Command", callback_data="get_command")],
-                [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main_menu")]
-            ]
+def download_video(url, output_path='./downloads', quality='highest', audio_only=False):
+    """Download YouTube video."""
+    try:
+        yt = YouTube(url)
+        
+        # Create downloads directory if it doesn't exist
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+        
+        get_video_info(yt)
+        
+        if audio_only:
+            print("\nDownloading audio...")
+            stream = yt.streams.get_audio_only()
         else:
-            keyboard = [
-                [InlineKeyboardButton("Download Directly", callback_data="direct_download")],
-                [InlineKeyboardButton("Get Download Command", callback_data="get_command")],
-                [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main_menu")]
-            ]
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Would you like to download directly or get the command?", reply_markup=reply_markup)
-        return
-
-    # Step 2: Handle actions for download or command
-    selected_option = context.user_data.get(user_id)
-    if user_action == "get_command":
-        command = {
-            "video": f"yt-dlp --output 'downloads/{user_id}/%(id)s.%(ext)s' {video_link}",
-            "image": f"yt-dlp --write-thumbnail --skip-download --output 'downloads/{user_id}/%(id)s.%(ext)s' {video_link}",
-            "subtitles": f"yt-dlp --write-auto-sub --sub-lang ar --skip-download --output 'downloads/{user_id}/%(id)s.%(ext)s' {video_link}",
-            "all": f"yt-dlp --write-auto-sub --sub-lang ar --write-thumbnail --output 'downloads/{user_id}/%(id)s.%(ext)s' {video_link}"
-        }.get(selected_option, None)
-
-        if command:
-            await query.edit_message_text(f"Run the following command on your machine to download:\n\n`{command}`", parse_mode="Markdown")
-        else:
-            await query.edit_message_text("Invalid option selected.")
-        return
-
-    if user_action == "direct_download":
-        await query.answer("Processing your request...")
-        download_dir = f"downloads/{user_id}"
-        os.makedirs(download_dir, exist_ok=True)
-
-        try:
-            commands = {
-                "video": ['yt-dlp', '--output', f'{download_dir}/%(id)s.%(ext)s', video_link],
-                "image": ['yt-dlp', '--write-thumbnail', '--skip-download', '--output', f'{download_dir}/%(id)s.%(ext)s', video_link],
-                "subtitles": ['yt-dlp', '--write-auto-sub', '--sub-lang', 'ar', '--skip-download', '--output', f'{download_dir}/%(id)s.%(ext)s', video_link],
-                "all": ['yt-dlp', '--write-auto-sub', '--sub-lang', 'ar', '--write-thumbnail', '--output', f'{download_dir}/%(id)s.%(ext)s', video_link]
-            }.get(selected_option, None)
-
-            if commands:
-                process = await asyncio.create_subprocess_exec(*commands, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                stdout, stderr = await process.communicate()
-                if process.returncode != 0:
-                    raise Exception(stderr.decode().strip())
-                await query.edit_message_text("Download successful. Sending files...")
-                for file_name in os.listdir(download_dir):
-                    file_path = os.path.join(download_dir, file_name)
-                    with open(file_path, 'rb') as f:
-                        await context.bot.send_document(chat_id=query.message.chat_id, document=f)
+            print("\nDownloading video...")
+            if quality == 'highest':
+                stream = yt.streams.get_highest_resolution()
             else:
-                await query.edit_message_text("Invalid option selected.")
-        except Exception as e:
-            logger.exception("An error occurred during processing.")
-            await query.edit_message_text(f"An unexpected error occurred: {e}")
-        finally:
-            shutil.rmtree(download_dir, ignore_errors=True)
-        return
+                stream = yt.streams.filter(res=quality, progressive=True).first()
+                if not stream:
+                    print(f"No stream found with quality {quality}. Downloading highest quality instead.")
+                    stream = yt.streams.get_highest_resolution()
+        
+        print(f"Downloading: {yt.title} ({stream.resolution if not audio_only else 'audio'})...")
+        stream.download(output_path)
+        print("\nDownload completed successfully!")
+        print(f"File saved to: {os.path.join(output_path, yt.title)}")
+        
+    except Exception as e:
+        print(f"\nError occurred: {str(e)}")
 
-    if user_action == "back_to_main_menu":
-        context.user_data[user_id] = None
-        keyboard = [
-            [InlineKeyboardButton("Download Video", callback_data="video")],
-            [InlineKeyboardButton("Download Subtitles", callback_data="subtitles")],
-            [InlineKeyboardButton("Download Thumbnail", callback_data="image")],
-            [InlineKeyboardButton("Download All", callback_data="all")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("What would you like to download?", reply_markup=reply_markup)
-        return
+def interactive_mode():
+    """Run the script in interactive mode."""
+    print("YouTube Video Downloader")
+    print("-----------------------")
+    
+    while True:
+        url = input("\nEnter YouTube URL (or 'q' to quit): ").strip()
+        if url.lower() == 'q':
+            break
+            
+        if not validate_youtube_url(url):
+            print("Invalid YouTube URL. Please try again.")
+            continue
+            
+        print("\nDownload options:")
+        print("1. Highest quality video")
+        print("2. Specific quality")
+        print("3. Audio only")
+        choice = input("Enter your choice (1-3): ").strip()
+        
+        output_path = input(f"Enter output directory (leave blank for './downloads'): ").strip()
+        output_path = output_path if output_path else './downloads'
+        
+        if choice == '1':
+            download_video(url, output_path)
+        elif choice == '2':
+            quality = input("Enter quality (e.g., 720p, 1080p): ").strip()
+            download_video(url, output_path, quality)
+        elif choice == '3':
+            download_video(url, output_path, audio_only=True)
+        else:
+            print("Invalid choice. Downloading highest quality by default.")
+            download_video(url, output_path)
 
-# Function to prompt the user for download options
-async def fetch_thumbnail_and_subtitle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_message = update.message.text.strip()
-    if is_valid_youtube_url(user_message):
-        user_requests[update.message.from_user.id] = user_message
-        keyboard = [
-            [InlineKeyboardButton("Download Video", callback_data="video")],
-            [InlineKeyboardButton("Download Subtitles", callback_data="subtitles")],
-            [InlineKeyboardButton("Download Thumbnail", callback_data="image")],
-            [InlineKeyboardButton("Download All", callback_data="all")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("What would you like to download?", reply_markup=reply_markup)
+def main():
+    parser = argparse.ArgumentParser(description='YouTube Video Downloader')
+    parser.add_argument('url', nargs='?', help='YouTube video URL')
+    parser.add_argument('-o', '--output', help='Output directory', default='./downloads')
+    parser.add_argument('-q', '--quality', help='Video quality (e.g., 720p, 1080p)', default='highest')
+    parser.add_argument('-a', '--audio', help='Download audio only', action='store_true')
+    
+    args = parser.parse_args()
+    
+    if args.url:
+        if not validate_youtube_url(args.url):
+            print("Error: Invalid YouTube URL")
+            sys.exit(1)
+        download_video(args.url, args.output, args.quality, args.audio)
     else:
-        await update.message.reply_text("Please send a valid YouTube link.")
+        interactive_mode()
 
-# Main function to set up the bot
-def main() -> None:
-    token = 'YOUR_API_TOCKEN'
-    logging.basicConfig(level=logging.INFO)
-    global logger
-    logger = logging.getLogger(__name__)
-    logger.info("Bot is starting...")
-
-    application = Application.builder().token(token).build()
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fetch_thumbnail_and_subtitle))
-    application.add_handler(CallbackQueryHandler(handle_download_option))
-    application.run_polling()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
