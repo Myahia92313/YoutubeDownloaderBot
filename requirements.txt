@@ -1,0 +1,7 @@
+python-telegram-bot>=20.0
+yt-dlp>=2023.3.1
+logging
+os
+re
+asyncio
+shutil
