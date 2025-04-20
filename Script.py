@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TOKEN = "7794311880:AAHSmwR2W3KnOmC50JOD4QYWuSuQdIU1G8A"
 DOWNLOAD_FOLDER = "./downloads"
 
 # Validate YouTube URL (same as before)
